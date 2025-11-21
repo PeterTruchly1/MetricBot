@@ -5,7 +5,7 @@ import express from 'express';
 
 dotenv.config();
 
-// --- KONFIGURÁCIA ---
+// --- CONFIGURATION ---
 const TOKEN = process.env.DISCORD_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
 const GUILD_ID = process.env.GUILD_ID;
@@ -22,16 +22,18 @@ const client = new Client({
     ]
 });
 
-// --- WEB SERVER (PRE RENDER KEEP-ALIVE) ---
+// --- WEB SERVER (KEEP-ALIVE FOR RENDER) ---
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('🤖 MetricBot is running and tracking activity!');
+    res.send('🤖 MetricBot is running 24/7 and tracking activity!');
 });
 
-app.get('/stress-test', async (req, res) => {
-    res.send('Stress test endpoint ready (optional)');
+// Lightweight endpoint for UptimeRobot (Safe version)
+// This does NOT run database operations to save resources
+app.get('/stress-test', (req, res) => {
+    res.send('✅ System is operational. Monitoring active.');
 });
 
 app.listen(PORT, () => {
@@ -39,14 +41,12 @@ app.listen(PORT, () => {
 });
 
 // Local cache for active sessions
-// Key: UserID, Value: Timestamp
 const activeSessions = new Map<string, number>();
 
 // --- EVENT: BOT START ---
 client.once('ready', async () => {
     console.log(`🤖 Bot ${client.user?.tag} is waking up...`);
     
-    // Connect to DB
     if (MONGO_URI) {
         await connectDB(MONGO_URI);
     } else {
@@ -103,12 +103,9 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
 // --- FUNCTION: WEEKLY CHECK ---
 async function checkWeeklyActivity() {
-    console.log("🔄 Starting activity check...");
+    console.log("🔄 Starting weekly activity check...");
     
-    if (!GUILD_ID || !ROLE_ID) {
-        console.log("⚠️ Missing GUILD_ID or ROLE_ID in .env, skipping check.");
-        return;
-    }
+    if (!GUILD_ID || !ROLE_ID) return;
 
     const guild = client.guilds.cache.get(GUILD_ID);
     if (!guild) return;
@@ -138,4 +135,5 @@ async function checkWeeklyActivity() {
     }
 }
 
+// Start the bot
 client.login(TOKEN);
