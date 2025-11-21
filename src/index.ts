@@ -1,8 +1,10 @@
-import { Client, GatewayIntentBits, GuildMember } from 'discord.js';
+import { Client, GatewayIntentBits } from 'discord.js';
 import * as dotenv from 'dotenv';
-import { connectDB, UserModel } from './storage';
 import express from 'express';
-import { runStressTest } from './stress_test';
+import { connectDB } from './storage';
+import { runStressTest } from './stressTest';
+import { setupVoiceTracking } from './voiceTracker';
+import { setupRoleChecking } from './roleManager';
 
 dotenv.config();
 
@@ -11,9 +13,9 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
 const GUILD_ID = process.env.GUILD_ID;
 const ROLE_ID = process.env.ROLE_ID;
-const AFK_CHANNEL_ID = process.env.AFK_CHANNEL_ID;
-const REQUIRED_SECONDS = 20 * 3600; // 20 hours in seconds
-const STRESS_TOKEN = process.env.STRESS_TOKEN; // optional security token
+const AFK_CHANNEL_ID = process.env.AFK_CHANNEL_ID || null;
+const REQUIRED_SECONDS = 20 * 3600; // 20 hodín v sekundách
+const STRESS_TOKEN = process.env.STRESS_TOKEN;
 
 // --- CLIENT INITIALIZATION ---
 const client = new Client({
@@ -24,7 +26,7 @@ const client = new Client({
     ]
 });
 
-// --- WEB SERVER (KEEP-ALIVE FOR RENDER) ---
+// --- WEB SERVER (KEEP-ALIVE) ---
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -35,7 +37,6 @@ app.get('/', (req, res) => {
 // Lightweight endpoint for stress test
 app.get('/stress-test', async (req, res) => {
     try {
-        // Simple ochrana: ak je STRESS_TOKEN nastavený, musí sedieť query ?token=
         if (STRESS_TOKEN && req.query.token !== STRESS_TOKEN) {
             return res.status(403).send('❌ Forbidden');
         }
@@ -53,100 +54,34 @@ app.listen(PORT, () => {
     console.log(`🌍 Web server is listening on port ${PORT}`);
 });
 
-// Local cache for active sessions
-const activeSessions = new Map<string, number>();
-
-// --- EVENT: BOT START ---
+// --- BOT READY ---
 client.once('ready', async () => {
     console.log(`🤖 Bot ${client.user?.tag} is waking up...`);
-    
-    if (MONGO_URI) {
-        await connectDB(MONGO_URI);
-    } else {
+
+    if (!MONGO_URI) {
         console.error("❌ ERROR: Missing MONGO_URI in .env file!");
+        return;
     }
 
+    await connectDB(MONGO_URI);
+    console.log("✅ DB connected.");
     console.log("✅ Bot is online and ready!");
-    
-    // Run weekly check every hour
-    setInterval(checkWeeklyActivity, 3600 * 1000);
+
+    // Trackovanie hlasu (JOIN/LEAVE/MOVE + recovery po štarte)
+    setupVoiceTracking(client, AFK_CHANNEL_ID);
+
+    // Prideľovanie role podľa aktivity (beží každú hodinu)
+    setupRoleChecking(client, {
+        guildId: GUILD_ID || undefined,
+        roleId: ROLE_ID || undefined,
+        requiredSeconds: REQUIRED_SECONDS,
+        intervalMs: 3600 * 1000
+    });
 });
 
-// --- EVENT: VOICE STATE UPDATE ---
-client.on('voiceStateUpdate', async (oldState, newState) => {
-    const member = newState.member;
-    if (!member || member.user.bot) return;
-
-    const userId = member.id;
-    const now = Date.now();
-    const isAfk = (channelId: string | null) => channelId === AFK_CHANNEL_ID;
-
-    // 1. USER JOINED (or returned from AFK)
-    const wasActive = oldState.channelId && !isAfk(oldState.channelId);
-    const isActive = newState.channelId && !isAfk(newState.channelId);
-
-    if (!wasActive && isActive) {
-        activeSessions.set(userId, now);
-        console.log(`🎙️ [START] ${member.user.tag} started tracking time.`);
-    }
-
-    // 2. USER LEFT (or went to AFK)
-    else if (wasActive && !isActive) {
-        if (activeSessions.has(userId)) {
-            const startTimestamp = activeSessions.get(userId)!;
-            const durationSeconds = Math.floor((now - startTimestamp) / 1000);
-            activeSessions.delete(userId);
-
-            if (durationSeconds > 0) {
-                try {
-                    // Update DB
-                    await UserModel.findOneAndUpdate(
-                        { discordId: userId },
-                        { $inc: { totalSeconds: durationSeconds } },
-                        { upsert: true, new: true }
-                    );
-                    console.log(`🛑 [STOP] ${member.user.tag}: +${durationSeconds}s saved.`);
-                } catch (err) {
-                    console.error("❌ Error saving to DB:", err);
-                }
-            }
-        }
-    }
-});
-
-// --- FUNCTION: WEEKLY CHECK ---
-async function checkWeeklyActivity() {
-    console.log("🔄 Starting weekly activity check...");
-    
-    if (!GUILD_ID || !ROLE_ID) return;
-
-    const guild = client.guilds.cache.get(GUILD_ID);
-    if (!guild) return;
-
-    const role = await guild.roles.fetch(ROLE_ID);
-    if (!role) return console.error("❌ Role not found on server.");
-
-    const allUsers = await UserModel.find({});
-
-    for (const dbUser of allUsers) {
-        try {
-            if (!dbUser.discordId) continue;
-            
-            const member = await guild.members.fetch(dbUser.discordId).catch(() => null);
-            if (!member) continue;
-
-            // CHECK: Has enough hours?
-            if (dbUser.totalSeconds >= REQUIRED_SECONDS) {
-                if (!member.roles.cache.has(ROLE_ID)) {
-                    await member.roles.add(role);
-                    console.log(`✅ Role ADDED: ${member.user.tag} (${(dbUser.totalSeconds/3600).toFixed(1)}h)`);
-                }
-            } 
-        } catch (e) {
-            console.error("Error processing user:", e);
-        }
-    }
+// --- LOGIN ---
+if (!TOKEN) {
+    console.error("❌ ERROR: Missing DISCORD_TOKEN in .env file!");
+} else {
+    client.login(TOKEN);
 }
-
-// Start the bot
-client.login(TOKEN);

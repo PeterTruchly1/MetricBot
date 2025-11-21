@@ -2,9 +2,8 @@ import mongoose from 'mongoose';
 
 // 1. Schema
 const userSchema = new mongoose.Schema({
-    discordId: { type: String, required: true, unique: true },
-    totalSeconds: { type: Number, default: 0 },
-    lastJoinTimestamp: { type: Number, default: null }
+  discordId: { type: String, required: true, unique: true },
+  totalSeconds: { type: Number, default: 0 }
 });
 
 // 2. Model
