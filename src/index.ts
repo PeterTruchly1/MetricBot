@@ -2,6 +2,7 @@ import { Client, GatewayIntentBits, GuildMember } from 'discord.js';
 import * as dotenv from 'dotenv';
 import { connectDB, UserModel } from './storage';
 import express from 'express';
+import { runStressTest } from './stress_test';
 
 dotenv.config();
 
@@ -12,6 +13,7 @@ const GUILD_ID = process.env.GUILD_ID;
 const ROLE_ID = process.env.ROLE_ID;
 const AFK_CHANNEL_ID = process.env.AFK_CHANNEL_ID;
 const REQUIRED_SECONDS = 20 * 3600; // 20 hours in seconds
+const STRESS_TOKEN = process.env.STRESS_TOKEN; // optional security token
 
 // --- CLIENT INITIALIZATION ---
 const client = new Client({
@@ -30,10 +32,21 @@ app.get('/', (req, res) => {
     res.send('🤖 MetricBot is running 24/7 and tracking activity!');
 });
 
-// Lightweight endpoint for UptimeRobot (Safe version)
-// This does NOT run database operations to save resources
-app.get('/stress-test', (req, res) => {
-    res.send('✅ System is operational. Monitoring active.');
+// Lightweight endpoint for stress test
+app.get('/stress-test', async (req, res) => {
+    try {
+        // Simple ochrana: ak je STRESS_TOKEN nastavený, musí sedieť query ?token=
+        if (STRESS_TOKEN && req.query.token !== STRESS_TOKEN) {
+            return res.status(403).send('❌ Forbidden');
+        }
+
+        console.log('🧪 Stress test endpoint called...');
+        await runStressTest();
+        res.send('✅ Stress test completed. Check logs for results.');
+    } catch (error) {
+        console.error('❌ Stress test error:', error);
+        res.status(500).send('❌ Stress test failed. See server logs.');
+    }
 });
 
 app.listen(PORT, () => {
