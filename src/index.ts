@@ -5,7 +5,7 @@ import express from 'express';
 
 dotenv.config();
 
-// --- CONFIGURATION ---
+// --- KONFIGURÁCIA ---
 const TOKEN = process.env.DISCORD_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
 const GUILD_ID = process.env.GUILD_ID;
@@ -28,6 +28,10 @@ const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
     res.send('🤖 MetricBot is running and tracking activity!');
+});
+
+app.get('/stress-test', async (req, res) => {
+    res.send('Stress test endpoint ready (optional)');
 });
 
 app.listen(PORT, () => {
