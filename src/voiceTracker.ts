@@ -5,91 +5,83 @@ import { UserModel } from './storage';
  * Trackovanie aktivity vo voice kanáloch.
  * Drží si aktívne session v pamäti a pri odchode/move zapisuje do DB.
  */
-export function setupVoiceTracking(client: Client, afkChannelId: string | null) {
-    // Lokálny cache: userId -> timestamp (ms)
-    const activeSessions = new Map<string, number>();
+export function setupVoiceTracking(
+  client: Client,
+  afkChannelId: string | null
+) {
+  // in-memory mapa aktuálnych session (join -> leave)
+  const activeSessions = new Map<
+    string,
+    { channelId: string; joinedAt: number }
+  >();
 
-    const isActiveChannel = (channelId: string | null): boolean => {
-        if (!channelId) return false;
-        if (afkChannelId && channelId === afkChannelId) return false;
-        return true;
-    };
+  client.on(
+    'voiceStateUpdate',
+    async (oldState: VoiceState, newState: VoiceState) => {
+      try {
+        const userId = newState.id;
 
-    // Po štarte bota obnovíme session pre ľudí, ktorí už sú vo voice
-    client.on('ready', () => {
-        console.log('♻️ Restoring active voice sessions after startup...');
+        // Jedno meno na logovanie pre oba smery (JOIN aj LEAVE)
+        const userName =
+          newState.member?.user.tag ??
+          oldState.member?.user.tag ??
+          userId;
 
-        client.guilds.cache.forEach(guild => {
-            guild.channels.cache.forEach((channel: any) => {
-                if (!channel.isVoiceBased || !channel.isVoiceBased()) return;
+        const beforeChannelId = oldState.channelId;
+        const afterChannelId = newState.channelId;
 
-                for (const [memberId, member] of channel.members) {
-                    if (!member.user.bot && isActiveChannel(channel.id)) {
-                        if (!activeSessions.has(memberId)) {
-                            activeSessions.set(memberId, Date.now());
-                            console.log(`   ↪ Restored session for ${member.user.tag}`);
-                        }
-                    }
-                }
-            });
-        });
-    });
+        const isOldAfk =
+          beforeChannelId &&
+          afkChannelId &&
+          beforeChannelId === afkChannelId;
 
-    client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState) => {
-        const member = newState.member || oldState.member;
-        if (!member || member.user.bot) return;
+        const isNewAfk =
+          afterChannelId && afkChannelId && afterChannelId === afkChannelId;
 
-        const userId = member.id;
-        const now = Date.now();
+        const sessionKey = userId;
 
-        const wasActive = isActiveChannel(oldState.channelId);
-        const nowActive = isActiveChannel(newState.channelId);
+        //
+        // 1) USER LEAVES VOICE / ide do AFK
+        //
+        if (activeSessions.has(sessionKey) && (!afterChannelId || isNewAfk)) {
+          const session = activeSessions.get(sessionKey)!;
+          activeSessions.delete(sessionKey);
 
-        // USER JOINED active voice (z ničoho / z AFK / z textu)
-        if (!wasActive && nowActive) {
-            activeSessions.set(userId, now);
-            console.log(`🎙️ [START] ${member.user.tag} started tracking time.`);
-            return;
-        }
+          const now = Date.now();
+          const seconds = Math.floor((now - session.joinedAt) / 1000);
 
-        // USER LEFT active voice (odišiel úplne alebo išiel do AFK)
-        if (wasActive && !nowActive) {
-            await endSessionAndSave(userId, now, member.user.tag);
-            return;
-        }
-
-        // USER MOVED medzi aktívnymi voice kanálmi
-        if (wasActive && nowActive && oldState.channelId !== newState.channelId) {
-            await endSessionAndSave(userId, now, member.user.tag, '[MOVE]');
-            // nový začiatok session v novom kanáli
-            activeSessions.set(userId, now);
-            return;
-        }
-    });
-
-    async function endSessionAndSave(
-        userId: string,
-        now: number,
-        tag: string,
-        prefix: string = '[STOP]'
-    ) {
-        const startTimestamp = activeSessions.get(userId);
-        if (!startTimestamp) return;
-
-        activeSessions.delete(userId);
-
-        const durationSeconds = Math.floor((now - startTimestamp) / 1000);
-        if (durationSeconds <= 0) return;
-
-        try {
-            await UserModel.findOneAndUpdate(
-                { discordId: userId },
-                { $inc: { totalSeconds: durationSeconds } },
-                { upsert: true }
+          if (seconds > 0) {
+            const updatedUser = await UserModel.findOneAndUpdate(
+              { discordId: userId },
+              { $inc: { totalSeconds: seconds } },
+              { upsert: true, new: true }
             );
-            console.log(`🛑 ${prefix} ${tag}: +${durationSeconds}s saved.`);
-        } catch (error) {
-            console.error("❌ Error saving to DB:", error);
+
+            console.log(
+              `🕒 Saved ${seconds}s for ${userName} (total=${updatedUser.totalSeconds}s)`
+            );
+          }
         }
+
+        //
+        // 2) USER JOINS VOICE / príde z AFK
+        //
+        const joinedFromNothing = !beforeChannelId && afterChannelId;
+        const movedFromAfk = isOldAfk && afterChannelId && !isNewAfk;
+
+        if ((joinedFromNothing || movedFromAfk) && afterChannelId && !isNewAfk) {
+          activeSessions.set(sessionKey, {
+            channelId: afterChannelId,
+            joinedAt: Date.now(),
+          });
+
+          console.log(
+            `🎙️ ${userName} started tracking time in channel ${afterChannelId}`
+          );
+        }
+      } catch (err) {
+        console.error('Error in voiceStateUpdate handler:', err);
+      }
     }
+  );
 }

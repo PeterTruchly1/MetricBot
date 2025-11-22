@@ -2,86 +2,132 @@ import { Client, GatewayIntentBits } from 'discord.js';
 import * as dotenv from 'dotenv';
 import express from 'express';
 import { connectDB } from './storage';
-import { runStressTest } from './stressTest';
-import { setupVoiceTracking } from './voiceTracker';
 import { setupRoleChecking } from './roleManager';
+import { setupVoiceTracking } from './voiceTracker';
+import { runStressTest } from './stressTest';
 
 dotenv.config();
 
-// --- CONFIGURATION ---
+// --- ENV CONFIG --------------------------------------------------
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const MONGO_URI = process.env.MONGO_URI;
 const GUILD_ID = process.env.GUILD_ID;
 const ROLE_ID = process.env.ROLE_ID;
-const AFK_CHANNEL_ID = process.env.AFK_CHANNEL_ID || null;
-const REQUIRED_SECONDS = 20 * 3600; // 20 hodín v sekundách
+const AFK_CHANNEL_ID = process.env.AFK_CHANNEL_ID;
 const STRESS_TOKEN = process.env.STRESS_TOKEN;
 
-// --- CLIENT INITIALIZATION ---
+// koľko sekúnd musí mať user za „obdobie“ (default 20h)
+const REQUIRED_SECONDS = Number(process.env.REQUIRED_SECONDS ?? 20 * 3600);
+
+// ako často kontrolovať rolu v minútach (default 60)
+const ROLE_CHECK_INTERVAL_MINUTES = Number(
+  process.env.ROLE_CHECK_INTERVAL_MINUTES ?? 60
+);
+
+if (!TOKEN) {
+  throw new Error('DISCORD_TOKEN is missing in .env');
+}
+
+if (!MONGO_URI) {
+  throw new Error('MONGO_URI is missing in .env');
+}
+
+// --- DISCORD CLIENT ----------------------------------------------
+
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMembers
-    ]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
+  ],
 });
 
-// --- WEB SERVER (KEEP-ALIVE) ---
+// --- GLOBAL ERROR LOGGING ----------------------------------------
+
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
+
+client.on('error', (err) => {
+  console.error('DISCORD CLIENT ERROR:', err);
+});
+
+client.on('shardError', (err, id) => {
+  console.error(`DISCORD SHARD ERROR (shard ${id}):`, err);
+});
+
+client.on('shardDisconnect', (event, id) => {
+  console.warn(`Shard ${id} disconnected`, event);
+});
+
+client.on('shardReconnecting', (id) => {
+  console.warn(`Shard ${id} reconnecting...`);
+});
+
+// --- MODULES -----------------------------------------------------
+
+// trackovanie času vo voice (AFK kanál je voliteľný)
+setupVoiceTracking(client, AFK_CHANNEL_ID ?? null);
+
+// --- READY EVENT -------------------------------------------------
+
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user?.tag}`);
+
+  // DB
+  try {
+    await connectDB(MONGO_URI);
+    console.log('✅ Connected to MongoDB');
+  } catch (err) {
+    console.error('❌ Failed to connect to MongoDB', err);
+  }
+
+  // Role manager (weekly activity / active user role)
+  if (GUILD_ID && ROLE_ID) {
+    setupRoleChecking(client, {
+      guildId: GUILD_ID,
+      roleId: ROLE_ID,
+      requiredSeconds: REQUIRED_SECONDS,
+      intervalMs: ROLE_CHECK_INTERVAL_MINUTES * 60 * 1000, // min -> ms
+    });
+  } else {
+    console.warn(
+      '⚠️ GUILD_ID or ROLE_ID is missing – role manager will not start.'
+    );
+  }
+});
+
+// --- EXPRESS KEEP-ALIVE + STRESS TEST ---------------------------
+
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT ?? 10000);
 
-app.get('/', (req, res) => {
-    res.send('🤖 MetricBot is running 24/7 and tracking activity!');
+app.get('/', (_req, res) => {
+  res.send('MetricBot is running');
 });
 
-// Lightweight endpoint for stress test
-app.get('/stress-test', async (req, res) => {
-    try {
-        if (STRESS_TOKEN && req.query.token !== STRESS_TOKEN) {
-            return res.status(403).send('❌ Forbidden');
-        }
+app.post('/stress-test', async (req, res) => {
+  const token = req.query.token;
 
-        console.log('🧪 Stress test endpoint called...');
-        await runStressTest();
-        res.send('✅ Stress test completed. Check logs for results.');
-    } catch (error) {
-        console.error('❌ Stress test error:', error);
-        res.status(500).send('❌ Stress test failed. See server logs.');
-    }
+  if (!STRESS_TOKEN || token !== STRESS_TOKEN) {
+    return res.status(403).send('Forbidden');
+  }
+
+  await runStressTest();
+  res.send('OK');
 });
 
 app.listen(PORT, () => {
-    console.log(`🌍 Web server is listening on port ${PORT}`);
+  console.log(`🌐 HTTP server listening on port ${PORT}`);
 });
 
-// --- BOT READY ---
-client.once('ready', async () => {
-    console.log(`🤖 Bot ${client.user?.tag} is waking up...`);
+// --- LOGIN -------------------------------------------------------
 
-    if (!MONGO_URI) {
-        console.error("❌ ERROR: Missing MONGO_URI in .env file!");
-        return;
-    }
-
-    await connectDB(MONGO_URI);
-    console.log("✅ DB connected.");
-    console.log("✅ Bot is online and ready!");
-
-    // Trackovanie hlasu (JOIN/LEAVE/MOVE + recovery po štarte)
-    setupVoiceTracking(client, AFK_CHANNEL_ID);
-
-    // Prideľovanie role podľa aktivity (beží každú hodinu)
-    setupRoleChecking(client, {
-        guildId: GUILD_ID || undefined,
-        roleId: ROLE_ID || undefined,
-        requiredSeconds: REQUIRED_SECONDS,
-        intervalMs: 3600 * 1000
-    });
+client.login(TOKEN).catch((err) => {
+  console.error('❌ Failed to login to Discord:', err);
 });
-
-// --- LOGIN ---
-if (!TOKEN) {
-    console.error("❌ ERROR: Missing DISCORD_TOKEN in .env file!");
-} else {
-    client.login(TOKEN);
-}
