@@ -1,14 +1,13 @@
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits, Events } from 'discord.js';
 import * as dotenv from 'dotenv';
 import express from 'express';
 import { connectDB } from './storage';
 import { setupRoleChecking } from './roleManager';
 import { setupVoiceTracking } from './voiceTracker';
-import { runStressTest } from './stressTest';
 
 dotenv.config();
 
-// --- GLOBAL ERROR LOGGING ---
+// --- GLOBAL ERROR LOGGING ---------------------------------------
 
 process.on('unhandledRejection', (reason) => {
   console.error('UNHANDLED REJECTION:', reason);
@@ -25,9 +24,17 @@ async function main() {
   const GUILD_ID = process.env.GUILD_ID;
   const ROLE_ID = process.env.ROLE_ID;
   const AFK_CHANNEL_ID = process.env.AFK_CHANNEL_ID;
-  const STRESS_TOKEN = process.env.STRESS_TOKEN;
 
-  const REQUIRED_SECONDS = Number(process.env.REQUIRED_SECONDS ?? 20 * 3600);
+  let REQUIRED_SECONDS = 20 * 3600;
+  if (process.env.REQUIRED_SECONDS) {
+  const parsed = Number(process.env.REQUIRED_SECONDS);
+  if (!Number.isNaN(parsed)) {
+    REQUIRED_SECONDS = parsed;
+  } else {
+    console.warn("⚠️ REQUIRED_SECONDS is NaN, using default 20h");
+  }
+}
+
   const ROLE_CHECK_INTERVAL_MINUTES = Number(
     process.env.ROLE_CHECK_INTERVAL_MINUTES ?? 60
   );
@@ -71,7 +78,7 @@ async function main() {
   setupVoiceTracking(client, AFK_CHANNEL_ID ?? null);
 
   // --- READY EVENT -----------------------------------------------
-  client.once('ready', async () => {
+  client.once(Events.ClientReady, async () => {
     console.log(`✅ Logged in as ${client.user?.tag}`);
 
     try {
@@ -79,7 +86,7 @@ async function main() {
       console.log('✅ Connected to MongoDB');
     } catch (err) {
       console.error('❌ Failed to connect to MongoDB', err);
-      // necháš proces bežať, lebo Mongoose si buffruje, alebo tu dáš process.exit(1)
+      process.exit(1);
     }
 
     if (GUILD_ID && ROLE_ID) {
@@ -96,23 +103,12 @@ async function main() {
     }
   });
 
-  // --- EXPRESS KEEP-ALIVE + STRESS TEST -------------------------
+  // --- EXPRESS KEEP-ALIVE SERVER --------------------------------
   const app = express();
   const PORT = Number(process.env.PORT ?? 10000);
 
   app.get('/', (_req, res) => {
     res.send('MetricBot is running');
-  });
-
-  app.post('/stress-test', async (req, res) => {
-    const token = req.query.token;
-
-    if (!STRESS_TOKEN || token !== STRESS_TOKEN) {
-      return res.status(403).send('Forbidden');
-    }
-
-    await runStressTest();
-    res.send('OK');
   });
 
   app.listen(PORT, () => {

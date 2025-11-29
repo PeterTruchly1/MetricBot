@@ -4,22 +4,26 @@ import { UserModel } from './storage';
 export interface RoleCheckOptions {
   guildId: string;
   roleId: string;
-  requiredSeconds: number; 
-  intervalMs?: number;    
+  requiredSeconds: number;
+  intervalMs?: number;
 }
 
-/**
- * Nastaví periodické prideľovanie/odoberanie role podľa activity.
- */
+let roleCheckInterval: NodeJS.Timeout | null = null;
+
 export function setupRoleChecking(client: Client, options: RoleCheckOptions) {
   const { guildId, roleId, requiredSeconds } = options;
-  const intervalMs = options.intervalMs ?? 60 * 60 * 1000; // default 1 hodina
+  const intervalMs = options.intervalMs ?? 300 * 60 * 1000; // default 5 hodín
 
   if (!guildId || !roleId) {
     console.warn(
       '⚠️ GuildId alebo RoleId nie je nastavené, role manager sa nespustí.'
     );
     return;
+  }
+
+  if (roleCheckInterval) {
+    clearInterval(roleCheckInterval);
+    roleCheckInterval = null;
   }
 
   console.log(
@@ -33,11 +37,10 @@ export function setupRoleChecking(client: Client, options: RoleCheckOptions) {
       (err) => console.error('❌ Error in weekly activity check:', err)
     );
 
-  // spusti hneď po štarte (nečakáme prvú hodinu)
+
   runCheck();
 
-  // a potom periodicky
-  setInterval(runCheck, intervalMs);
+  roleCheckInterval = setInterval(runCheck, intervalMs);
 }
 
 async function checkWeeklyActivity(
@@ -52,6 +55,12 @@ async function checkWeeklyActivity(
     requiredSeconds: number;
   }
 ) {
+  
+  if (!client.isReady()) {
+    console.warn('⏳ Client is not ready, skipping weekly activity check.');
+    return;
+  }
+
   console.log('🔄 Starting weekly activity check...');
 
   const guild = client.guilds.cache.get(guildId);
